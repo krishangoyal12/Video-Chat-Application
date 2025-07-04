@@ -5,11 +5,12 @@ import { io } from "socket.io-client";
 const baseUrl = import.meta.env.VITE_BACKEND_URL;
 
 const socket = io(baseUrl, {
-  transports: ["polling"],
+  transports: ["polling", "websocket"],
   reconnectionAttempts: 5,
   reconnectionDelay: 1000,
   timeout: 10000,
   forceNew: true,
+  withCredentials: true
 });
 
 export default function Room() {
