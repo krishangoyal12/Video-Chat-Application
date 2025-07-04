@@ -7,8 +7,13 @@ require('dotenv').config()
 
 const app = express();
 
+let frontendUrl = process.env.FRONTEND_URL;
+if (frontendUrl && !frontendUrl.startsWith('http')) {
+  frontendUrl = 'https://' + frontendUrl;
+}
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
+  origin: frontendUrl || 'https://krishan-video-call-app.netlify.app',
   methods: ['GET', 'POST'],
   credentials: true
 }));
@@ -17,12 +22,12 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: process.env.FRONTEND_URL, // In production, specify actual origin
+        origin: frontendUrl || 'https://krishan-video-call-app.netlify.app',
         methods: ['GET', 'POST'],
         credentials: true
     },
-    pingTimeout: 60000, // Add ping timeout
-    transports: ['websocket', 'polling'] // Support both transport methods
+    pingTimeout: 60000,
+    transports: ['polling', 'websocket'] // Match client order
 });
 
 // Simple connection logging
@@ -47,5 +52,5 @@ server.on('error', (error) => {
 
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => {
-    console.log(`Server is running at http://localhost:${process.env.PORT}`);
+    console.log(`Server is running at http://localhost:${PORT}`);
 });
