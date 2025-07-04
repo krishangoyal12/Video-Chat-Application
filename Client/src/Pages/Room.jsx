@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 
-const socket = io("http://localhost:8000", {
+const baseUrl = import.meta.env.VITE_BACKEND_URL
+
+const socket = io(baseUrl, {
   transports: ["polling"],
   reconnectionAttempts: 5,
   reconnectionDelay: 1000,
@@ -141,7 +143,9 @@ export default function Room() {
         try {
           const candidate = new RTCIceCandidate(data.candidate);
           await pc.addIceCandidate(candidate);
-        } catch {}
+        } catch {
+            // 
+        }
       }
     });
 
@@ -205,7 +209,6 @@ export default function Room() {
     setPeerConnectionStatus("waiting");
   };
 
-  // Helper function to determine grid layout based on participant count
   const getGridLayout = () => {
     const totalParticipants = remoteUsers.length + 1; // +1 for local user
     
