@@ -17,7 +17,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: '*', // In production, specify actual origin
+        origin: process.env.FRONTEND_URL, // In production, specify actual origin
         methods: ['GET', 'POST'],
         credentials: true
     },
