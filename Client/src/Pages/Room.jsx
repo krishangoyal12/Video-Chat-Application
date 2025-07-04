@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 
-const baseUrl = import.meta.env.VITE_BACKEND_URL
+const baseUrl = import.meta.env.VITE_BACKEND_URL;
 
 const socket = io(baseUrl, {
   transports: ["polling"],
@@ -45,6 +45,20 @@ export default function Room() {
       socket.off("connect");
       socket.off("connect_error");
       socket.off("disconnect");
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      console.log("Page unloading, cleaning up connection");
+      socket.emit("leave-room");
+      socket.disconnect();
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, []);
 
@@ -144,7 +158,7 @@ export default function Room() {
           const candidate = new RTCIceCandidate(data.candidate);
           await pc.addIceCandidate(candidate);
         } catch {
-            // 
+          //
         }
       }
     });
@@ -211,37 +225,37 @@ export default function Room() {
 
   const getGridLayout = () => {
     const totalParticipants = remoteUsers.length + 1; // +1 for local user
-    
+
     // Determine optimal grid dimensions
     if (totalParticipants <= 1) {
       return {
         gridTemplateColumns: "1fr",
-        gridTemplateRows: "1fr"
+        gridTemplateRows: "1fr",
       };
     } else if (totalParticipants <= 2) {
       return {
         gridTemplateColumns: "1fr 1fr",
-        gridTemplateRows: "1fr"
+        gridTemplateRows: "1fr",
       };
     } else if (totalParticipants <= 4) {
       return {
         gridTemplateColumns: "1fr 1fr",
-        gridTemplateRows: "1fr 1fr"
+        gridTemplateRows: "1fr 1fr",
       };
     } else if (totalParticipants <= 9) {
       return {
         gridTemplateColumns: "1fr 1fr 1fr",
-        gridTemplateRows: "repeat(auto-fit, 1fr)"
+        gridTemplateRows: "repeat(auto-fit, 1fr)",
       };
     } else if (totalParticipants <= 16) {
       return {
         gridTemplateColumns: "1fr 1fr 1fr 1fr",
-        gridTemplateRows: "repeat(auto-fit, 1fr)"
+        gridTemplateRows: "repeat(auto-fit, 1fr)",
       };
     } else {
       return {
         gridTemplateColumns: "repeat(5, 1fr)",
-        gridTemplateRows: "repeat(auto-fit, 1fr)"
+        gridTemplateRows: "repeat(auto-fit, 1fr)",
       };
     }
   };
@@ -276,7 +290,7 @@ export default function Room() {
         >
           {connectionStatus === "connecting" && "⏳ Connecting to server..."}
           {connectionStatus === "error" &&
-            "❌ Connection error! Make sure server is running on port 8000."}
+            `❌ Connection error! Make sure server is running at ${baseUrl}`}
           {connectionStatus === "disconnected" &&
             "🔌 Disconnected from server. Trying to reconnect..."}
         </div>
@@ -307,15 +321,17 @@ export default function Room() {
       </div>
 
       {/* Grid video container */}
-      <div style={{
-        display: "grid",
-        ...getGridLayout(),
-        gap: "10px",
-        marginTop: "1rem",
-        minHeight: "50vh",
-        maxHeight: "75vh",
-        overflow: "hidden"
-      }}>
+      <div
+        style={{
+          display: "grid",
+          ...getGridLayout(),
+          gap: "10px",
+          marginTop: "1rem",
+          minHeight: "50vh",
+          maxHeight: "75vh",
+          overflow: "hidden",
+        }}
+      >
         {/* Local user video */}
         <div style={styles.videoCard}>
           <div style={styles.videoLabelContainer}>
@@ -328,7 +344,7 @@ export default function Room() {
             playsInline
             style={{
               ...styles.video,
-              ...getVideoSize()
+              ...getVideoSize(),
             }}
           />
         </div>
@@ -337,7 +353,9 @@ export default function Room() {
         {remoteUsers.map((userId) => (
           <div key={userId} style={styles.videoCard}>
             <div style={styles.videoLabelContainer}>
-              <span style={styles.videoLabel}>User {userId.substring(0, 8)}...</span>
+              <span style={styles.videoLabel}>
+                User {userId.substring(0, 8)}...
+              </span>
             </div>
             <video
               ref={(el) => {
@@ -349,7 +367,7 @@ export default function Room() {
               playsInline
               style={{
                 ...styles.video,
-                ...getVideoSize()
+                ...getVideoSize(),
               }}
             />
           </div>
@@ -411,5 +429,5 @@ const styles = {
   videoLabel: {
     color: "white",
     fontSize: "0.8rem",
-  }
+  },
 };
