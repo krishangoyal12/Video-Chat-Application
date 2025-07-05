@@ -1,14 +1,14 @@
 import React from 'react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import {v4 as uuidv4} from 'uuid'
+import { nanoid } from 'nanoid'
 
 export default function LandingPage() {
     const [roomInput, setRoomInput] = useState('')
     const navigate = useNavigate();
 
     const handleCreateRoom = () => {
-        const newRoomId = uuidv4()
+        const newRoomId = nanoid(6)
         navigate(`/room/${newRoomId}`)
     }
 

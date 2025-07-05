@@ -344,7 +344,7 @@ export default function Room() {
   return (
     <div className="room-container">
       <div className="room-header">
-        <h2 className="room-title">Room: {roomId?.substring(0, 8)}...</h2>
+        <h2 className="room-title">Room Id: {roomId}</h2>
         <div className={`status-indicator ${connectionStatus}`}>
           <div className={`status-dot ${connectionStatus}`} />
           {connectionStatus === "connected" ? "Connected" : "Connecting..."}
