@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
+import { Mic, MicOff, Video, VideoOff, Phone } from "lucide-react";
+import "./Room.css";
 
-// Use environment variable with fallback for local development
 const baseUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
-
-// Create socket instance outside component to prevent re-creation
 const socket = io(baseUrl, {
   autoConnect: false,
   reconnectionAttempts: 5,
@@ -21,12 +20,24 @@ export default function Room() {
   const [connectionStatus, setConnectionStatus] = useState("connecting");
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [activeSpeaker, setActiveSpeaker] = useState(null);
+  const [remoteVideoStatus, setRemoteVideoStatus] = useState({});
 
-  // Refs for WebRTC and component state
+  // Refs
   const localVideoRef = useRef();
   const localStream = useRef(null);
   const peerConnections = useRef({});
   const remoteVideoRefs = useRef({});
+  const audioContextRef = useRef(null);
+  const analysersRef = useRef({});
+
+  // Effect to handle window resizing
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // ICE server configuration
   const iceConfig = {
@@ -46,12 +57,48 @@ export default function Room() {
     ],
   };
 
-  const createPeerConnection = useCallback((remoteUserId) => {
-    console.log(`Creating peer connection for ${remoteUserId}`);
-    if (peerConnections.current[remoteUserId]) {
-      console.log(`Connection for ${remoteUserId} already exists.`);
-      return;
+  // Audio level detection setup
+  const setupAudioAnalyser = (userId, stream) => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext ||
+        window.webkitAudioContext)();
     }
+
+    const analyser = audioContextRef.current.createAnalyser();
+    analyser.fftSize = 32;
+    const source = audioContextRef.current.createMediaStreamSource(stream);
+    source.connect(analyser);
+    analysersRef.current[userId] = analyser;
+  };
+
+  // Detect active speaker
+  useEffect(() => {
+    if (Object.keys(analysersRef.current).length === 0) return;
+
+    const interval = setInterval(() => {
+      const dataArray = new Uint8Array(32);
+      let maxVolume = 0;
+      let loudestUserId = null;
+
+      Object.entries(analysersRef.current).forEach(([userId, analyser]) => {
+        analyser.getByteFrequencyData(dataArray);
+        const volume = Math.max(...dataArray);
+
+        if (volume > maxVolume && volume > 30) {
+          // Threshold to avoid false positives
+          maxVolume = volume;
+          loudestUserId = userId;
+        }
+      });
+
+      setActiveSpeaker(loudestUserId);
+    }, 200);
+
+    return () => clearInterval(interval);
+  }, [remoteUsers]);
+
+  const createPeerConnection = useCallback((remoteUserId) => {
+    if (peerConnections.current[remoteUserId]) return;
 
     const pc = new RTCPeerConnection(iceConfig);
     peerConnections.current[remoteUserId] = pc;
@@ -63,10 +110,26 @@ export default function Room() {
     }
 
     pc.ontrack = (event) => {
-      console.log(`Received track from ${remoteUserId}`);
       if (event.streams && event.streams[0]) {
         if (remoteVideoRefs.current[remoteUserId]) {
           remoteVideoRefs.current[remoteUserId].srcObject = event.streams[0];
+          setupAudioAnalyser(remoteUserId, event.streams[0]);
+        }
+        const videoTrack = event.streams[0].getVideoTracks()[0];
+        if (videoTrack) {
+          setRemoteVideoStatus((prev) => ({
+            ...prev,
+            [remoteUserId]: videoTrack.enabled,
+          }));
+          videoTrack.onmute = () => {
+            setRemoteVideoStatus((prev) => ({
+              ...prev,
+              [remoteUserId]: false,
+            }));
+          };
+          videoTrack.onunmute = () => {
+            setRemoteVideoStatus((prev) => ({ ...prev, [remoteUserId]: true }));
+          };
         }
       }
     };
@@ -81,23 +144,24 @@ export default function Room() {
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(
-        `Connection state with ${remoteUserId}: ${pc.connectionState}`
-      );
       if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-        console.log(`Connection with ${remoteUserId} lost.`);
         if (peerConnections.current[remoteUserId]) {
           peerConnections.current[remoteUserId].close();
           delete peerConnections.current[remoteUserId];
         }
         setRemoteUsers((prev) => prev.filter((id) => id !== remoteUserId));
+        delete analysersRef.current[remoteUserId];
+        setRemoteVideoStatus((prev) => {
+          const newStatus = { ...prev };
+          delete newStatus[remoteUserId];
+          return newStatus;
+        });
       }
     };
 
     pc.onnegotiationneeded = async () => {
       try {
         if (socket.id > remoteUserId) {
-          console.log(`Negotiation needed. Creating offer for ${remoteUserId}`);
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           socket.emit("signal", {
@@ -129,6 +193,7 @@ export default function Room() {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+        setupAudioAnalyser("local", stream);
         socket.connect();
       } catch (err) {
         console.error("Failed to get media:", err);
@@ -140,38 +205,40 @@ export default function Room() {
     };
 
     const onConnect = () => {
-      console.log("Socket connected:", socket.id);
       setConnectionStatus("connected");
       socket.emit("join-room", roomId);
     };
 
     const onDisconnect = () => {
-      console.log("Socket disconnected");
       setConnectionStatus("disconnected");
       Object.values(peerConnections.current).forEach((pc) => pc.close());
       peerConnections.current = {};
       setRemoteUsers([]);
+      analysersRef.current = {};
     };
 
     const onAllUsers = (users) => {
-      console.log("Received all users:", users);
       setRemoteUsers(users);
       users.forEach((userId) => createPeerConnection(userId));
     };
 
     const onUserJoined = (userId) => {
-      console.log("User joined:", userId);
       setRemoteUsers((prev) => [...prev, userId]);
       createPeerConnection(userId);
     };
 
     const onUserDisconnected = (userId) => {
-      console.log("User disconnected:", userId);
       if (peerConnections.current[userId]) {
         peerConnections.current[userId].close();
         delete peerConnections.current[userId];
       }
       setRemoteUsers((prev) => prev.filter((id) => id !== userId));
+      delete analysersRef.current[userId];
+      setRemoteVideoStatus((prev) => {
+        const newStatus = { ...prev };
+        delete newStatus[userId];
+        return newStatus;
+      });
     };
 
     const onSignal = async ({ from, data }) => {
@@ -207,7 +274,6 @@ export default function Room() {
     socket.on("signal", onSignal);
 
     return () => {
-      console.log("Cleaning up Room component.");
       if (localStream.current) {
         localStream.current.getTracks().forEach((track) => track.stop());
       }
@@ -219,6 +285,9 @@ export default function Room() {
       socket.off("signal", onSignal);
       if (socket.connected) {
         socket.disconnect();
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
       }
     };
   }, [roomId, navigate, createPeerConnection]);
@@ -246,175 +315,129 @@ export default function Room() {
     }
   };
 
-  const getGridLayout = (userCount) => {
-    const total = userCount + 1;
-    if (total <= 2) return { gridTemplateColumns: `repeat(${total}, 1fr)` };
-    if (total <= 4)
-      return { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" };
-    const columns = Math.ceil(Math.sqrt(total));
-    return { gridTemplateColumns: `repeat(${columns}, 1fr)` };
+  const getGridClass = () => {
+    const totalParticipants = remoteUsers.length + 1;
+    if (totalParticipants <= 1) return "participants-1";
+    if (totalParticipants === 2) return "participants-2";
+    if (totalParticipants === 3) return "participants-3";
+    if (totalParticipants === 4) return "participants-4";
+    if (totalParticipants <= 6) return "participants-6";
+    if (totalParticipants <= 9) return "participants-9";
+    return "participants-many";
+  };
+
+  const getVideoTileClass = (userId) => {
+    let classes = "video-tile";
+    if (userId === "local") classes += " local";
+    if (activeSpeaker === userId) classes += " active-speaker";
+    return classes;
+  };
+
+  const getVideoClass = (userId) => {
+    let classes = "video-element";
+    if (userId === "local") classes += " local";
+    if (activeSpeaker && activeSpeaker !== userId && userId !== "local")
+      classes += " dimmed";
+    return classes;
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <h2 style={{ margin: 0 }}>Room: {roomId.substring(0, 8)}...</h2>
-        <div style={styles.statusBox}>
-          {connectionStatus === "connected"
-            ? "✅ Connected"
-            : "⏳ Connecting..."}
+    <div className="room-container">
+      <div className="room-header">
+        <h2 className="room-title">Room: {roomId?.substring(0, 8)}...</h2>
+        <div className={`status-indicator ${connectionStatus}`}>
+          <div className={`status-dot ${connectionStatus}`} />
+          {connectionStatus === "connected" ? "Connected" : "Connecting..."}
         </div>
       </div>
 
-      <div
-        style={{ ...styles.videoGrid, ...getGridLayout(remoteUsers.length) }}
-      >
-        <div style={styles.videoCard}>
-          {!isVideoEnabled && <div style={styles.avatar}>You</div>}
+      <div className={`video-grid ${getGridClass()}`}>
+        {/* Local video */}
+        <div className={getVideoTileClass("local")}>
+          {!isVideoEnabled && <div className="video-avatar">You</div>}
           <video
             ref={localVideoRef}
             autoPlay
             muted
             playsInline
-            style={{
-              ...styles.video,
-              ...styles.localVideo,
-              display: isVideoEnabled ? "block" : "none",
-            }}
+            className={getVideoClass("local")}
+            style={{ display: isVideoEnabled ? "block" : "none" }}
           />
-          <div style={styles.videoLabel}>
-            <span>You</span>
-            <span style={styles.micIcon}>{isMuted ? "🔇" : "🎤"}</span>
+          <div className="video-label">
+            <span className="video-name">You</span>
+            <span className={`video-status ${isMuted ? "muted" : "active"}`}>
+              {isMuted ? (
+                <>
+                  <MicOff size={12} /> Muted
+                </>
+              ) : (
+                <>
+                  <Mic size={12} /> Active
+                </>
+              )}
+            </span>
           </div>
         </div>
+
+        {/* Remote videos */}
         {remoteUsers.map((userId) => (
-          <div key={userId} style={styles.videoCard}>
+          <div key={userId} className={getVideoTileClass(userId)}>
+            {remoteVideoStatus[userId] === false && (
+              <div className="video-avatar">
+                <VideoOff size={isMobile ? 24 : 32} />
+              </div>
+            )}
             <video
               ref={(el) => (remoteVideoRefs.current[userId] = el)}
               autoPlay
               playsInline
-              style={styles.video}
+              className={getVideoClass(userId)}
+              style={{
+                display: remoteVideoStatus[userId] !== false ? "block" : "none",
+              }}
             />
-            <div style={styles.videoLabel}>
-              <span>User {userId.substring(0, 6)}</span>
+            <div className="video-label">
+              <span className="video-name">User {userId.substring(0, 6)}</span>
+              {activeSpeaker === userId && (
+                <span className="video-status speaking">
+                  <Mic size={12} /> Speaking
+                </span>
+              )}
             </div>
           </div>
         ))}
       </div>
 
-      <div style={styles.controls}>
+      <div className="controls-container">
         <button
           onClick={toggleAudio}
-          style={{
-            ...styles.controlButton,
-            background: isMuted ? "#5f6368" : "#3c4043",
-          }}
+          className={`control-button mute ${isMuted ? "muted" : ""}`}
+          aria-label={isMuted ? "Unmute" : "Mute"}
         >
+          {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
           {isMuted ? "Unmute" : "Mute"}
         </button>
+
         <button
           onClick={toggleVideo}
-          style={{
-            ...styles.controlButton,
-            background: !isVideoEnabled ? "#5f6368" : "#3c4043",
-          }}
+          className={`control-button video ${
+            !isVideoEnabled ? "disabled" : ""
+          }`}
+          aria-label={isVideoEnabled ? "Stop Video" : "Start Video"}
         >
-          {isVideoEnabled ? "Cam Off" : "Cam On"}
+          {isVideoEnabled ? <Video size={20} /> : <VideoOff size={20} />}
+          {isVideoEnabled ? "Stop Video" : "Start Video"}
         </button>
+
         <button
           onClick={handleHangUp}
-          style={{ ...styles.controlButton, ...styles.hangUpButton }}
+          className="control-button hangup"
+          aria-label="Hang Up"
         >
+          <Phone size={20} />
           Hang Up
         </button>
       </div>
     </div>
   );
 }
-
-// --- Styles ---
-const styles = {
-  container: {
-    display: "flex",
-    flexDirection: "column",
-    height: "100vh",
-    background: "#202124",
-    color: "#fff",
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "1rem",
-  },
-  statusBox: {
-    padding: "0.5rem 1rem",
-    borderRadius: "6px",
-    background: "rgba(255, 255, 255, 0.1)",
-    fontSize: "0.9rem",
-  },
-  videoGrid: {
-    flex: 1,
-    display: "grid",
-    gap: "1rem",
-    padding: "1rem",
-    overflow: "hidden",
-  },
-  videoCard: {
-    position: "relative",
-    background: "#3c4043",
-    borderRadius: "12px",
-    overflow: "hidden",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  video: { width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" },
-  localVideo: { transform: "scaleX(-1)" },
-  avatar: {
-    position: "absolute",
-    width: 100,
-    height: 100,
-    borderRadius: "50%",
-    background: "#5f6368",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "2rem",
-  },
-  videoLabel: {
-    position: "absolute",
-    bottom: "0",
-    left: "0",
-    width: "100%",
-    padding: "8px",
-    boxSizing: "border-box",
-    background: "linear-gradient(to top, rgba(0,0,0,0.7), transparent)",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  micIcon: {
-    background: "rgba(0,0,0,0.5)",
-    padding: "4px",
-    borderRadius: "50%",
-  },
-  controls: {
-    padding: "1rem",
-    textAlign: "center",
-    background: "rgba(0,0,0,0.2)",
-    display: "flex",
-    justifyContent: "center",
-    gap: "1rem",
-  },
-  controlButton: {
-    padding: "0.75rem 1.5rem",
-    color: "#fff",
-    border: "none",
-    borderRadius: "50px",
-    fontSize: "1rem",
-    cursor: "pointer",
-    transition: "background-color 0.2s ease",
-  },
-  hangUpButton: { background: "#ea4335" },
-};
