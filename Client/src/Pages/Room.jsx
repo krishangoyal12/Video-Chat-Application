@@ -9,8 +9,8 @@ const socket = io(baseUrl, {
   reconnectionAttempts: 5,
   reconnectionDelay: 1000,
   timeout: 10000,
-  forceNew: true,
-  withCredentials: true
+  autoConnect: false, // Don't connect automatically
+  withCredentials: true,
 });
 
 export default function Room() {
@@ -38,6 +38,7 @@ export default function Room() {
 
   // Socket and WebRTC setup (existing code unchanged)
   useEffect(() => {
+    // socket.connect()
     socket.on("connect", () => setConnectionStatus("connected"));
     socket.on("connect_error", () => setConnectionStatus("error"));
     socket.on("disconnect", () => setConnectionStatus("disconnected"));
@@ -46,6 +47,7 @@ export default function Room() {
       socket.off("connect");
       socket.off("connect_error");
       socket.off("disconnect");
+    //   socket.disconnect()
     };
   }, []);
 
@@ -63,7 +65,11 @@ export default function Room() {
     };
   }, []);
 
+  // Replace your existing useEffect that handles media setup
   useEffect(() => {
+    // First set up socket listeners
+    setupSocket();
+
     const initMedia = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -74,8 +80,16 @@ export default function Room() {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-        setupSocket();
-      } catch {
+
+        // Only join room after media is ready
+        if (socket.connected) {
+          socket.emit("join-room", roomId);
+        } else {
+          console.log("Socket not connected, waiting...");
+          socket.connect(); // Try reconnecting
+        }
+      } catch (err) {
+        console.error("Media error:", err);
         alert("Camera/Microphone access is required for video calling.");
       }
     };
@@ -83,14 +97,14 @@ export default function Room() {
     initMedia();
 
     return () => {
+      console.log("Cleaning up room effect");
       socket.disconnect();
       if (localStream.current) {
         localStream.current.getTracks().forEach((track) => track.stop());
       }
       Object.values(peerConnections.current).forEach((pc) => pc.close());
     };
-    // eslint-disable-next-line
-  }, []);
+  }, [roomId]);
 
   const setupSocket = () => {
     // Existing socket setup code - unchanged
@@ -112,16 +126,37 @@ export default function Room() {
     }
 
     socket.on("all-users", async (users) => {
+      console.log(
+        `Received existing users: ${users.length ? users.join(", ") : "none"}`
+      );
+
+      // Filter out any users that are already connected
+      const newUsers = users.filter(
+        (userId) => !peerConnections.current[userId]
+      );
+
+      // Update state with all users
       setRemoteUsers(users);
-      for (const userId of users) {
-        if (!peerConnections.current[userId]) {
-          await createPeerConnection(userId);
-          const offer = await peerConnections.current[userId].createOffer();
-          await peerConnections.current[userId].setLocalDescription(offer);
+
+      // Create connections for new users
+      for (const userId of newUsers) {
+        console.log(`Creating connection for user ${userId}`);
+        const pc = await createPeerConnection(userId);
+
+        try {
+          const offer = await pc.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true,
+          });
+          await pc.setLocalDescription(offer);
+
+          console.log(`Sending offer to ${userId}`);
           socket.emit("signal", {
             to: userId,
             data: { type: "offer", sdp: offer },
           });
+        } catch (err) {
+          console.error(`Error creating offer for ${userId}:`, err);
         }
       }
     });
@@ -134,33 +169,45 @@ export default function Room() {
     });
 
     socket.on("signal", async ({ from, data }) => {
-      let pc = peerConnections.current[from];
-      if (!pc) {
-        await createPeerConnection(from);
-        pc = peerConnections.current[from];
-      }
-
-      if (data.type === "offer") {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit("signal", {
-          to: from,
-          data: { type: "answer", sdp: answer },
-        });
-      }
-
-      if (data.type === "answer") {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      }
-
-      if (data.type === "candidate") {
-        try {
-          const candidate = new RTCIceCandidate(data.candidate);
-          await pc.addIceCandidate(candidate);
-        } catch {
-          //
+      try {
+        let pc = peerConnections.current[from];
+        if (!pc) {
+          console.log(`Creating new peer connection for ${from}`);
+          pc = await createPeerConnection(from);
         }
+
+        if (data.type === "offer") {
+          console.log(`Processing offer from ${from}`);
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+
+          if (!localStream.current) {
+            console.warn("No local stream available for creating answer");
+            return;
+          }
+
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit("signal", {
+            to: from,
+            data: { type: "answer", sdp: answer },
+          });
+        } else if (data.type === "answer") {
+          console.log(`Processing answer from ${from}`);
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        } else if (data.type === "candidate") {
+          console.log(`Processing ICE candidate from ${from}`);
+          try {
+            const candidate = new RTCIceCandidate(data.candidate);
+            await pc.addIceCandidate(candidate);
+          } catch (err) {
+            // Only ignore if we're not connected yet
+            if (pc.signalingState !== "closed") {
+              console.warn(`Error adding ICE candidate:`, err);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error handling signal from ${from}:`, err);
       }
     });
 
@@ -180,6 +227,7 @@ export default function Room() {
     const pc = new RTCPeerConnection(iceConfig);
     peerConnections.current[remoteUserId] = pc;
 
+    // Add tracks from local stream
     if (localStream.current) {
       localStream.current.getTracks().forEach((track) => {
         pc.addTrack(track, localStream.current);
@@ -205,9 +253,37 @@ export default function Room() {
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      setPeerConnectionStatus(pc.connectionState);
+    // Add these event handlers for better connection monitoring
+    pc.oniceconnectionstatechange = () => {
+      console.log(
+        `ICE connection state with ${remoteUserId}: ${pc.iceConnectionState}`
+      );
+      if (pc.iceConnectionState === "failed") {
+        // Try to restart ICE if connection fails
+        pc.restartIce();
+      }
     };
+
+    pc.onconnectionstatechange = () => {
+      console.log(
+        `Connection state with ${remoteUserId}: ${pc.connectionState}`
+      );
+      setPeerConnectionStatus(pc.connectionState);
+
+      // If this specific connection fails, attempt to recreate it
+      if (pc.connectionState === "failed") {
+        console.log(
+          `Connection to ${remoteUserId} failed, attempting reconnect`
+        );
+        setTimeout(() => {
+          pc.close();
+          delete peerConnections.current[remoteUserId];
+          createPeerConnection(remoteUserId);
+        }, 2000);
+      }
+    };
+
+    return pc;
   };
 
   const handleHangUp = () => {
@@ -344,7 +420,7 @@ export default function Room() {
             muted
             playsInline
             style={{
-              ...styles.video,
+              ...styles.localVideo,
               ...getVideoSize(),
             }}
           />
@@ -367,7 +443,7 @@ export default function Room() {
               autoPlay
               playsInline
               style={{
-                ...styles.video,
+                ...styles.remoteVideo,
                 ...getVideoSize(),
               }}
             />
@@ -430,5 +506,18 @@ const styles = {
   videoLabel: {
     color: "white",
     fontSize: "0.8rem",
+  },
+  localVideo: {
+    objectFit: "contain",
+    borderRadius: "4px",
+    backgroundColor: "#000",
+    transform: "scaleX(-1)",
+  },
+
+  remoteVideo: {
+    objectFit: "contain",
+    borderRadius: "4px",
+    backgroundColor: "#000",
+    transform: "scaleX(-1)",
   },
 };

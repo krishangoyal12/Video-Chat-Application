@@ -3,11 +3,11 @@ const http = require('http');
 const {Server} = require('socket.io');
 const cors = require('cors');
 const registerSocketHandlers = require('./socket');
-require('dotenv').config()
+require('dotenv').config();
 
 const app = express();
 
-// Define allowed origins as an array with complete URLs
+// Define allowed origins with complete URLs
 const allowedOrigins = [
   'https://krishan-video-call-app.netlify.app',
   'http://localhost:5173'
@@ -19,26 +19,32 @@ if (frontendUrl) {
   if (!frontendUrl.startsWith('http')) {
     frontendUrl = 'https://' + frontendUrl;
   }
-  // Add to allowed origins if not already there
   if (!allowedOrigins.includes(frontendUrl)) {
     allowedOrigins.push(frontendUrl);
   }
 }
 
-// Log configuration for debugging
 console.log('CORS allowed origins:', allowedOrigins);
 
-// Configure Express CORS
+// Add explicit headers to handle CORS
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  next();
+});
+
+// Standard CORS middleware as fallback
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       console.log('CORS blocked origin:', origin);
-      callback(new Error('Not allowed by CORS'));
+      callback(null, false);
     }
   },
   methods: ['GET', 'POST'],
@@ -47,18 +53,26 @@ app.use(cors({
 
 const server = http.createServer(app);
 
-// Configure Socket.IO CORS (needs to be exact same format)
+// Socket.IO with better CORS handling
 const io = new Server(server, {
-    cors: {
-        origin: allowedOrigins,
-        methods: ['GET', 'POST'],
-        credentials: true
+  cors: {
+    // Use a function to ensure proper header formatting
+    origin: function(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, origin);
+      } else {
+        console.log('Socket.IO CORS blocked origin:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
     },
-    pingTimeout: 60000,
-    transports: ['polling', 'websocket']
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  pingTimeout: 60000,
+  transports: ['polling', 'websocket']
 });
 
-// Simple connection logging
+// Rest of your server code remains the same
 io.on('connection', (socket) => {
     console.log('New socket connection:', socket.id);
 });
@@ -69,7 +83,6 @@ app.get('/', (req, res) => {
     res.send('Video Call Server is running');
 });
 
-// Health check endpoint with CORS info
 app.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'ok', 
