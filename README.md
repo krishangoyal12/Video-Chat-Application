@@ -84,7 +84,7 @@ Follow these instructions to set up and run the project on your local machine.
 
 2.  **Set up the Backend Server:**
 
-    ```sh
+    ```
     cd Server
     npm install
     ```
@@ -100,7 +100,7 @@ Follow these instructions to set up and run the project on your local machine.
 
     Now, start the server:
 
-    ```sh
+    ```
     npm start
     ```
 
@@ -135,5 +135,5 @@ The application leverages WebRTC for peer-to-peer media streaming, with a Node.j
 
 ## Deployment
 
-- **Client**: The frontend is configured for deployment on **Netlify**. The `netlify.toml` file in the `Client` directory contains the necessary configuration for a single-page application (SPA).
-- **Server**: The backend server can be deployed to any platform that supports Node.js, such as **Render**, **Heroku**, or a traditional VPS. Ensure you set the `FRONTEND_URL` environment variable on the server to your deployed client's URL to enable proper communication between the client and server.
+- **Client**: The frontend is deployed on **Netlify**.
+- **Server**: The backend server is deployed to **Render**.
