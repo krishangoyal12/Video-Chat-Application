@@ -1,47 +1,38 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 
 // Use environment variable with fallback for local development
 const baseUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
-console.log("Using backend URL:", baseUrl);
 
-// Create socket but don't connect immediately
+// Create socket instance outside component to prevent re-creation
 const socket = io(baseUrl, {
-  transports: ["polling", "websocket"],
-  reconnectionAttempts: 5,
-  reconnectionDelay: 1000,
-  timeout: 10000,
   autoConnect: false,
-  // Remove withCredentials for local testing - can cause CORS issues
+  reconnectionAttempts: 5,
+  reconnectionDelay: 3000,
 });
 
 export default function Room() {
   const { roomId } = useParams();
+  const navigate = useNavigate();
+
+  // State variables
+  const [remoteUsers, setRemoteUsers] = useState([]);
+  const [connectionStatus, setConnectionStatus] = useState("connecting");
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+
+  // Refs for WebRTC and component state
   const localVideoRef = useRef();
   const localStream = useRef(null);
   const peerConnections = useRef({});
-  const remoteStreams = useRef({});
-  const [remoteUsers, setRemoteUsers] = useState([]);
-  const [connectionStatus, setConnectionStatus] = useState("connecting");
-  const [peerConnectionStatus, setPeerConnectionStatus] = useState("waiting");
-  const navigate = useNavigate();
+  const remoteVideoRefs = useRef({});
 
-  // Keep track of whether socket event listeners have been set up
-  const socketSetupDone = useRef(false);
-
+  // ICE server configuration
   const iceConfig = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun.l.google.com:5349" },
-      { urls: "stun:stun1.l.google.com:3478" },
-      { urls: "stun:stun1.l.google.com:5349" },
-      { urls: "stun:stun2.l.google.com:19302" },
-      { urls: "stun:stun2.l.google.com:5349" },
-      { urls: "stun:stun3.l.google.com:3478" },
-      { urls: "stun:stun3.l.google.com:5349" },
-      { urls: "stun:stun4.l.google.com:19302" },
-      { urls: "stun:stun4.l.google.com:5349" },
+      { urls: "stun:stun1.l.google.com:19302" },
       {
         urls: "turn:openrelay.metered.ca:80",
         username: "openrelayproject",
@@ -53,275 +44,18 @@ export default function Room() {
         credential: "openrelayproject",
       },
     ],
-    iceCandidatePoolSize: 10,
   };
 
-  // Debug socket connection
-  useEffect(() => {
-    console.log("Room component initialized. Room ID:", roomId);
-
-    // Add connection logging
-    const handleConnect = () => {
-      console.log("Socket connected successfully. ID:", socket.id);
-      setConnectionStatus("connected");
-    };
-
-    const handleConnectError = (err) => {
-      console.error("Socket connection error:", err);
-      setConnectionStatus("error");
-    };
-
-    const handleDisconnect = (reason) => {
-      console.log("Socket disconnected:", reason);
-      setConnectionStatus("disconnected");
-    };
-
-    // Connect socket
-    socket.connect();
-
-    socket.on("connect", handleConnect);
-    socket.on("connect_error", handleConnectError);
-    socket.on("disconnect", handleDisconnect);
-
-    return () => {
-      socket.off("connect", handleConnect);
-      socket.off("connect_error", handleConnectError);
-      socket.off("disconnect", handleDisconnect);
-    };
-  }, []);
-
-  // Handle page unload/navigation
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      console.log("Page unloading, cleaning up connection");
-      socket.emit("leave-room");
-      socket.disconnect();
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-    };
-  }, []);
-
-  // Setup socket events and media
-  useEffect(() => {
-    // Make sure we don't set up socket events multiple times
-    if (!socketSetupDone.current) {
-      setupSocket();
-      socketSetupDone.current = true;
-    }
-
-    const initMedia = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
-        localStream.current = stream;
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-
-        // Only join room after media is ready and socket is connected
-        if (socket.connected) {
-          console.log("Joining room:", roomId);
-          socket.emit("join-room", roomId);
-        } else {
-          console.log("Socket not connected, waiting to join room");
-          const checkConnInterval = setInterval(() => {
-            if (socket.connected) {
-              console.log("Socket now connected, joining room:", roomId);
-              socket.emit("join-room", roomId);
-              clearInterval(checkConnInterval);
-            }
-          }, 1000);
-
-          // Clear interval after 10 seconds if no connection
-          setTimeout(() => clearInterval(checkConnInterval), 10000);
-        }
-      } catch (err) {
-        console.error("Media error:", err);
-        alert("Camera/Microphone access is required for video calling.");
-      }
-    };
-
-    initMedia();
-
-    return () => {
-      console.log("Cleaning up room effect");
-      socket.emit("leave-room");
-
-      // Don't disconnect socket here - we'll handle that on actual component unmount
-      if (localStream.current) {
-        localStream.current.getTracks().forEach((track) => track.stop());
-      }
-      Object.values(peerConnections.current).forEach((pc) => pc.close());
-    };
-  }, [roomId]);
-
-  // Debug active connections
-  useEffect(() => {
-    const debugInterval = setInterval(() => {
-      console.log(
-        "Active peer connections:",
-        Object.keys(peerConnections.current)
-      );
-      console.log("Remote users:", remoteUsers);
-    }, 10000);
-
-    return () => clearInterval(debugInterval);
-  }, [remoteUsers]);
-
-  const setupSocket = () => {
-    console.log("Setting up socket event listeners");
-
-    // Remove any existing listeners to prevent duplicates
-    socket.off("all-users");
-    socket.off("user-joined");
-    socket.off("signal");
-    socket.off("user-disconnected");
-
-    socket.on("all-users", async (users) => {
-      console.log(
-        `Received existing users: ${users.length ? users.join(", ") : "none"}`
-      );
-
-      // Update remote users list (filter out any users that don't exist)
-      const validUsers = users.filter((id) => id && id !== socket.id);
-      setRemoteUsers(validUsers);
-
-      // Create connections for new users
-      for (const userId of validUsers) {
-        // Skip if connection already exists
-        if (peerConnections.current[userId]) {
-          console.log(`Connection to ${userId} already exists, skipping`);
-          continue;
-        }
-
-        console.log(`Creating connection for user ${userId}`);
-        const pc = await createPeerConnection(userId);
-
-        try {
-          // Only create offer if we have local stream
-          if (!localStream.current) {
-            console.warn("No local stream available for creating offer");
-            continue;
-          }
-
-          const offer = await pc.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true,
-          });
-          await pc.setLocalDescription(offer);
-
-          console.log(`Sending offer to ${userId}`);
-          socket.emit("signal", {
-            to: userId,
-            data: { type: "offer", sdp: offer },
-          });
-        } catch (err) {
-          console.error(`Error creating offer for ${userId}:`, err);
-        }
-      }
-    });
-
-    socket.on("user-joined", async (userId) => {
-      console.log(`User ${userId} joined the room`);
-
-      // Don't add ourselves or duplicate users
-      if (userId === socket.id || remoteUsers.includes(userId)) {
-        return;
-      }
-
-      // Update remote users list
-      setRemoteUsers((prev) => [...prev, userId]);
-
-      // Create peer connection if it doesn't exist
-      if (!peerConnections.current[userId]) {
-        await createPeerConnection(userId);
-      }
-    });
-
-    socket.on("signal", async ({ from, data }) => {
-      // Don't process signals from ourselves
-      if (from === socket.id) return;
-
-      try {
-        let pc = peerConnections.current[from];
-        if (!pc) {
-          console.log(`Creating new peer connection for ${from}`);
-          pc = await createPeerConnection(from);
-        }
-
-        if (data.type === "offer") {
-          console.log(`Processing offer from ${from}`);
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-
-          if (!localStream.current) {
-            console.warn("No local stream available for creating answer");
-            return;
-          }
-
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-
-          console.log(`Sending answer to ${from}`);
-          socket.emit("signal", {
-            to: from,
-            data: { type: "answer", sdp: answer },
-          });
-        } else if (data.type === "answer") {
-          console.log(`Processing answer from ${from}`);
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        } else if (data.type === "candidate") {
-          console.log(`Processing ICE candidate from ${from}`);
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } catch (err) {
-            // Only ignore if we're not connected yet
-            if (pc.signalingState !== "closed") {
-              console.warn(`Error adding ICE candidate:`, err);
-            }
-          }
-        }
-      } catch (err) {
-        console.error(`Error handling signal from ${from}:`, err);
-      }
-    });
-
-    socket.on("user-disconnected", (userId) => {
-      console.log(`User ${userId} disconnected`);
-
-      // Clean up peer connection
-      if (peerConnections.current[userId]) {
-        peerConnections.current[userId].close();
-        delete peerConnections.current[userId];
-      }
-
-      // Clean up remote stream
-      if (remoteStreams.current[userId]) {
-        delete remoteStreams.current[userId];
-      }
-
-      // Update UI
-      setRemoteUsers((prev) => prev.filter((id) => id !== userId));
-    });
-  };
-
-  const createPeerConnection = async (remoteUserId) => {
+  const createPeerConnection = useCallback((remoteUserId) => {
     console.log(`Creating peer connection for ${remoteUserId}`);
-
-    // Check if connection already exists
     if (peerConnections.current[remoteUserId]) {
-      peerConnections.current[remoteUserId].close();
+      console.log(`Connection for ${remoteUserId} already exists.`);
+      return;
     }
 
     const pc = new RTCPeerConnection(iceConfig);
     peerConnections.current[remoteUserId] = pc;
 
-    // Add tracks from local stream
     if (localStream.current) {
       localStream.current.getTracks().forEach((track) => {
         pc.addTrack(track, localStream.current);
@@ -331,9 +65,9 @@ export default function Room() {
     pc.ontrack = (event) => {
       console.log(`Received track from ${remoteUserId}`);
       if (event.streams && event.streams[0]) {
-        remoteStreams.current[remoteUserId] = event.streams[0];
-        // Force UI update
-        setRemoteUsers((prev) => [...prev]);
+        if (remoteVideoRefs.current[remoteUserId]) {
+          remoteVideoRefs.current[remoteUserId].srcObject = event.streams[0];
+        }
       }
     };
 
@@ -341,21 +75,8 @@ export default function Room() {
       if (event.candidate) {
         socket.emit("signal", {
           to: remoteUserId,
-          data: {
-            type: "candidate",
-            candidate: event.candidate,
-          },
+          data: { type: "candidate", candidate: event.candidate },
         });
-      }
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.log(
-        `ICE connection state with ${remoteUserId}: ${pc.iceConnectionState}`
-      );
-      if (pc.iceConnectionState === "failed") {
-        console.log(`ICE connection failed with ${remoteUserId}, restarting`);
-        pc.restartIce();
       }
     };
 
@@ -363,227 +84,246 @@ export default function Room() {
       console.log(
         `Connection state with ${remoteUserId}: ${pc.connectionState}`
       );
-
-      // Update UI connection status based on peer connections
-      const allPeerConnections = Object.values(peerConnections.current);
-      if (
-        allPeerConnections.some((conn) => conn.connectionState === "connected")
-      ) {
-        setPeerConnectionStatus("connected");
-      } else if (
-        allPeerConnections.some((conn) => conn.connectionState === "connecting")
-      ) {
-        setPeerConnectionStatus("connecting");
-      } else if (
-        allPeerConnections.some((conn) => conn.connectionState === "failed")
-      ) {
-        setPeerConnectionStatus("failed");
-      } else {
-        setPeerConnectionStatus("waiting");
-      }
-
-      if (
-        pc.connectionState === "failed" ||
-        pc.connectionState === "disconnected"
-      ) {
-        console.log(
-          `Connection to ${remoteUserId} ${pc.connectionState}, attempting reconnect`
-        );
-        setTimeout(() => {
-          if (peerConnections.current[remoteUserId] === pc) {
-            pc.close();
-            delete peerConnections.current[remoteUserId];
-            createPeerConnection(remoteUserId);
-          }
-        }, 2000);
+      if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+        console.log(`Connection with ${remoteUserId} lost.`);
+        if (peerConnections.current[remoteUserId]) {
+          peerConnections.current[remoteUserId].close();
+          delete peerConnections.current[remoteUserId];
+        }
+        setRemoteUsers((prev) => prev.filter((id) => id !== remoteUserId));
       }
     };
 
-    return pc;
-  };
+    pc.onnegotiationneeded = async () => {
+      try {
+        if (socket.id > remoteUserId) {
+          console.log(`Negotiation needed. Creating offer for ${remoteUserId}`);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit("signal", {
+            to: remoteUserId,
+            data: { type: "offer", sdp: pc.localDescription },
+          });
+        }
+      } catch (err) {
+        console.error("Error during negotiation:", err);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const setupMedia = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        });
+        localStream.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+        socket.connect();
+      } catch (err) {
+        console.error("Failed to get media:", err);
+        alert(
+          "Camera and microphone access is required. Please allow access and refresh."
+        );
+        navigate("/");
+      }
+    };
+
+    const onConnect = () => {
+      console.log("Socket connected:", socket.id);
+      setConnectionStatus("connected");
+      socket.emit("join-room", roomId);
+    };
+
+    const onDisconnect = () => {
+      console.log("Socket disconnected");
+      setConnectionStatus("disconnected");
+      Object.values(peerConnections.current).forEach((pc) => pc.close());
+      peerConnections.current = {};
+      setRemoteUsers([]);
+    };
+
+    const onAllUsers = (users) => {
+      console.log("Received all users:", users);
+      setRemoteUsers(users);
+      users.forEach((userId) => createPeerConnection(userId));
+    };
+
+    const onUserJoined = (userId) => {
+      console.log("User joined:", userId);
+      setRemoteUsers((prev) => [...prev, userId]);
+      createPeerConnection(userId);
+    };
+
+    const onUserDisconnected = (userId) => {
+      console.log("User disconnected:", userId);
+      if (peerConnections.current[userId]) {
+        peerConnections.current[userId].close();
+        delete peerConnections.current[userId];
+      }
+      setRemoteUsers((prev) => prev.filter((id) => id !== userId));
+    };
+
+    const onSignal = async ({ from, data }) => {
+      const pc = peerConnections.current[from];
+      if (!pc) return;
+
+      try {
+        if (data.type === "offer") {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit("signal", {
+            to: from,
+            data: { type: "answer", sdp: pc.localDescription },
+          });
+        } else if (data.type === "answer") {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        } else if (data.type === "candidate") {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+      } catch (err) {
+        console.error("Error handling signal:", err);
+      }
+    };
+
+    setupMedia();
+
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("all-users", onAllUsers);
+    socket.on("user-joined", onUserJoined);
+    socket.on("user-disconnected", onUserDisconnected);
+    socket.on("signal", onSignal);
+
+    return () => {
+      console.log("Cleaning up Room component.");
+      if (localStream.current) {
+        localStream.current.getTracks().forEach((track) => track.stop());
+      }
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("all-users", onAllUsers);
+      socket.off("user-joined", onUserJoined);
+      socket.off("user-disconnected", onUserDisconnected);
+      socket.off("signal", onSignal);
+      if (socket.connected) {
+        socket.disconnect();
+      }
+    };
+  }, [roomId, navigate, createPeerConnection]);
 
   const handleHangUp = () => {
-    socket.emit("leave-room");
+    socket.disconnect();
     navigate("/");
+  };
 
-    // Clean up resources
-    Object.values(peerConnections.current).forEach((pc) => pc.close());
-    peerConnections.current = {};
-    remoteStreams.current = {};
-
+  const toggleAudio = () => {
     if (localStream.current) {
-      localStream.current.getTracks().forEach((track) => track.stop());
-      localStream.current = null;
-    }
-
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-
-    setRemoteUsers([]);
-    setPeerConnectionStatus("waiting");
-  };
-
-  const getGridLayout = () => {
-    const totalParticipants = remoteUsers.length + 1;
-
-    if (totalParticipants <= 1) {
-      return {
-        gridTemplateColumns: "1fr",
-        gridTemplateRows: "1fr",
-      };
-    } else if (totalParticipants <= 2) {
-      return {
-        gridTemplateColumns: "1fr 1fr",
-        gridTemplateRows: "1fr",
-      };
-    } else if (totalParticipants <= 4) {
-      return {
-        gridTemplateColumns: "1fr 1fr",
-        gridTemplateRows: "1fr 1fr",
-      };
-    } else if (totalParticipants <= 9) {
-      return {
-        gridTemplateColumns: "1fr 1fr 1fr",
-        gridTemplateRows: "repeat(auto-fit, 1fr)",
-      };
-    } else if (totalParticipants <= 16) {
-      return {
-        gridTemplateColumns: "1fr 1fr 1fr 1fr",
-        gridTemplateRows: "repeat(auto-fit, 1fr)",
-      };
-    } else {
-      return {
-        gridTemplateColumns: "repeat(5, 1fr)",
-        gridTemplateRows: "repeat(auto-fit, 1fr)",
-      };
+      localStream.current
+        .getAudioTracks()
+        .forEach((track) => (track.enabled = !track.enabled));
+      setIsMuted((prev) => !prev);
     }
   };
 
-  const getVideoSize = () => {
-    const totalParticipants = remoteUsers.length + 1;
-    if (totalParticipants <= 1) {
-      return { width: "100%", height: "auto", maxHeight: "70vh" };
-    } else if (totalParticipants <= 4) {
-      return { width: "100%", height: "auto", maxHeight: "40vh" };
-    } else if (totalParticipants <= 9) {
-      return { width: "100%", height: "auto", maxHeight: "30vh" };
-    } else {
-      return { width: "100%", height: "auto", maxHeight: "25vh" };
+  const toggleVideo = () => {
+    if (localStream.current) {
+      localStream.current
+        .getVideoTracks()
+        .forEach((track) => (track.enabled = !track.enabled));
+      setIsVideoEnabled((prev) => !prev);
     }
+  };
+
+  const getGridLayout = (userCount) => {
+    const total = userCount + 1;
+    if (total <= 2) return { gridTemplateColumns: `repeat(${total}, 1fr)` };
+    if (total <= 4)
+      return { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" };
+    const columns = Math.ceil(Math.sqrt(total));
+    return { gridTemplateColumns: `repeat(${columns}, 1fr)` };
   };
 
   return (
     <div style={styles.container}>
-      <h2>Room: {roomId}</h2>
-
-      {connectionStatus !== "connected" && (
-        <div
-          style={{
-            padding: "10px",
-            backgroundColor:
-              connectionStatus === "error" ? "#ffcccc" : "#ffffcc",
-            borderRadius: "5px",
-            marginBottom: "10px",
-          }}
-        >
-          {connectionStatus === "connecting" && "⏳ Connecting to server..."}
-          {connectionStatus === "error" &&
-            `❌ Connection error! Make sure server is running at ${baseUrl}`}
-          {connectionStatus === "disconnected" &&
-            "🔌 Disconnected from server. Trying to reconnect..."}
+      <div style={styles.header}>
+        <h2 style={{ margin: 0 }}>Room: {roomId.substring(0, 8)}...</h2>
+        <div style={styles.statusBox}>
+          {connectionStatus === "connected"
+            ? "✅ Connected"
+            : "⏳ Connecting..."}
         </div>
-      )}
-
-      <div
-        style={{
-          padding: "10px",
-          backgroundColor:
-            peerConnectionStatus === "connected"
-              ? "#d4edda"
-              : peerConnectionStatus === "connecting"
-              ? "#fff3cd"
-              : peerConnectionStatus === "failed"
-              ? "#f8d7da"
-              : "#f8f9fa",
-          borderRadius: "5px",
-          marginBottom: "10px",
-        }}
-      >
-        {peerConnectionStatus === "connected"
-          ? `🟢 Connected to ${remoteUsers.length} peer(s)`
-          : peerConnectionStatus === "connecting"
-          ? "🟡 Connecting to peer(s)..."
-          : peerConnectionStatus === "failed"
-          ? "🔴 Connection failed"
-          : "⚪ Waiting for other participants..."}
       </div>
 
       <div
-        style={{
-          display: "grid",
-          ...getGridLayout(),
-          gap: "10px",
-          marginTop: "1rem",
-          minHeight: "50vh",
-          maxHeight: "75vh",
-          overflow: "hidden",
-        }}
+        style={{ ...styles.videoGrid, ...getGridLayout(remoteUsers.length) }}
       >
-        {/* Local user video */}
         <div style={styles.videoCard}>
-          <div style={styles.videoLabelContainer}>
-            <span style={styles.videoLabel}>You</span>
-          </div>
+          {!isVideoEnabled && <div style={styles.avatar}>You</div>}
           <video
             ref={localVideoRef}
             autoPlay
             muted
             playsInline
             style={{
+              ...styles.video,
               ...styles.localVideo,
-              ...getVideoSize(),
+              display: isVideoEnabled ? "block" : "none",
             }}
           />
+          <div style={styles.videoLabel}>
+            <span>You</span>
+            <span style={styles.micIcon}>{isMuted ? "🔇" : "🎤"}</span>
+          </div>
         </div>
-
-        {/* Remote users videos */}
         {remoteUsers.map((userId) => (
           <div key={userId} style={styles.videoCard}>
-            <div style={styles.videoLabelContainer}>
-              <span style={styles.videoLabel}>
-                User {userId.substring(0, 8)}...
-              </span>
-            </div>
             <video
-              ref={(el) => {
-                if (el && remoteStreams.current[userId]) {
-                  el.srcObject = remoteStreams.current[userId];
-                }
-              }}
+              ref={(el) => (remoteVideoRefs.current[userId] = el)}
               autoPlay
               playsInline
-              style={{
-                ...styles.remoteVideo,
-                ...getVideoSize(),
-              }}
+              style={styles.video}
             />
+            <div style={styles.videoLabel}>
+              <span>User {userId.substring(0, 6)}</span>
+            </div>
           </div>
         ))}
       </div>
 
-      <div style={{ marginTop: "1.5rem", textAlign: "center" }}>
+      <div style={styles.controls}>
+        <button
+          onClick={toggleAudio}
+          style={{
+            ...styles.controlButton,
+            background: isMuted ? "#5f6368" : "#3c4043",
+          }}
+        >
+          {isMuted ? "Unmute" : "Mute"}
+        </button>
+        <button
+          onClick={toggleVideo}
+          style={{
+            ...styles.controlButton,
+            background: !isVideoEnabled ? "#5f6368" : "#3c4043",
+          }}
+        >
+          {isVideoEnabled ? "Cam Off" : "Cam On"}
+        </button>
         <button
           onClick={handleHangUp}
-          style={{
-            padding: "0.75rem 2rem",
-            background: "#e74c3c",
-            color: "#fff",
-            border: "none",
-            borderRadius: "6px",
-            fontSize: "1rem",
-            cursor: "pointer",
-          }}
+          style={{ ...styles.controlButton, ...styles.hangUpButton }}
         >
           Hang Up
         </button>
@@ -592,53 +332,89 @@ export default function Room() {
   );
 }
 
+// --- Styles ---
 const styles = {
   container: {
-    padding: "1rem",
-    fontFamily: "sans-serif",
-    height: "100vh",
-    overflow: "hidden",
     display: "flex",
     flexDirection: "column",
+    height: "100vh",
+    background: "#202124",
+    color: "#fff",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "1rem",
+  },
+  statusBox: {
+    padding: "0.5rem 1rem",
+    borderRadius: "6px",
+    background: "rgba(255, 255, 255, 0.1)",
+    fontSize: "0.9rem",
+  },
+  videoGrid: {
+    flex: 1,
+    display: "grid",
+    gap: "1rem",
+    padding: "1rem",
+    overflow: "hidden",
   },
   videoCard: {
     position: "relative",
-    backgroundColor: "#1a1a1a",
-    borderRadius: "8px",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
+    background: "#3c4043",
+    borderRadius: "12px",
     overflow: "hidden",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  video: {
-    objectFit: "contain",
-    borderRadius: "4px",
-    backgroundColor: "#000",
-  },
-  videoLabelContainer: {
+  video: { width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" },
+  localVideo: { transform: "scaleX(-1)" },
+  avatar: {
     position: "absolute",
-    bottom: "10px",
-    left: "10px",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    padding: "4px 8px",
-    borderRadius: "4px",
-    zIndex: 1,
+    width: 100,
+    height: 100,
+    borderRadius: "50%",
+    background: "#5f6368",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "2rem",
   },
   videoLabel: {
-    color: "white",
-    fontSize: "0.8rem",
+    position: "absolute",
+    bottom: "0",
+    left: "0",
+    width: "100%",
+    padding: "8px",
+    boxSizing: "border-box",
+    background: "linear-gradient(to top, rgba(0,0,0,0.7), transparent)",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
-  localVideo: {
-    objectFit: "contain",
-    borderRadius: "4px",
-    backgroundColor: "#000",
-    transform: "scaleX(-1)",
+  micIcon: {
+    background: "rgba(0,0,0,0.5)",
+    padding: "4px",
+    borderRadius: "50%",
   },
-
-  remoteVideo: {
-    objectFit: "contain",
-    borderRadius: "4px",
-    backgroundColor: "#000",
-    transform: "scaleX(-1)",
+  controls: {
+    padding: "1rem",
+    textAlign: "center",
+    background: "rgba(0,0,0,0.2)",
+    display: "flex",
+    justifyContent: "center",
+    gap: "1rem",
   },
+  controlButton: {
+    padding: "0.75rem 1.5rem",
+    color: "#fff",
+    border: "none",
+    borderRadius: "50px",
+    fontSize: "1rem",
+    cursor: "pointer",
+    transition: "background-color 0.2s ease",
+  },
+  hangUpButton: { background: "#ea4335" },
 };
