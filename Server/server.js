@@ -7,13 +7,11 @@ require('dotenv').config();
 
 const app = express();
 
-// Define allowed origins with complete URLs
 const allowedOrigins = [
   'https://krishan-video-call-app.netlify.app',
   'http://localhost:5173'
 ];
 
-// Get frontend URL from environment, with protocol
 let frontendUrl = process.env.FRONTEND_URL;
 if (frontendUrl) {
   if (!frontendUrl.startsWith('http')) {
@@ -26,7 +24,6 @@ if (frontendUrl) {
 
 console.log('CORS allowed origins:', allowedOrigins);
 
-// Add explicit headers to handle CORS
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
@@ -37,7 +34,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Standard CORS middleware as fallback
 app.use(cors({
   origin: function(origin, callback) {
     if (!origin || allowedOrigins.includes(origin)) {
@@ -53,10 +49,8 @@ app.use(cors({
 
 const server = http.createServer(app);
 
-// Socket.IO with better CORS handling
 const io = new Server(server, {
   cors: {
-    // Use a function to ensure proper header formatting
     origin: function(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, origin);
@@ -72,7 +66,6 @@ const io = new Server(server, {
   transports: ['polling', 'websocket']
 });
 
-// Rest of your server code remains the same
 io.on('connection', (socket) => {
     console.log('New socket connection:', socket.id);
 });
