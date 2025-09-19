@@ -2,10 +2,11 @@ import React from 'react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { nanoid } from 'nanoid'
-import { Video, Users, Zap, Shield, ArrowRight, Sparkles } from 'lucide-react'
+import { Video, Users, Zap, Shield, ArrowRight, Sparkles, Menu, X } from 'lucide-react'
 
 export default function LandingPage() {
     const [roomInput, setRoomInput] = useState('')
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
     const navigate = useNavigate();
 
     const handleCreateRoom = () => {
@@ -56,9 +57,9 @@ export default function LandingPage() {
         <div className="min-h-screen flex flex-col">
             {/* Background Pattern */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute top-20 left-10 w-72 h-72 bg-primary-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse"></div>
+                <div className="absolute top-20 left-10 w-72 h-72 bg-primary-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-float"></div>
                 <div className="absolute top-40 right-10 w-96 h-96 bg-accent-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse" style={{animationDelay: '2s'}}></div>
-                <div className="absolute -bottom-32 left-20 w-80 h-80 bg-primary-300 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse" style={{animationDelay: '4s'}}></div>
+                <div className="absolute -bottom-32 left-20 w-80 h-80 bg-primary-300 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-float" style={{animationDelay: '4s'}}></div>
             </div>
 
             {/* Header */}
@@ -78,6 +79,27 @@ export default function LandingPage() {
                                 Sign In
                             </button>
                         </div>
+                        
+                        {/* Mobile menu button */}
+                        <button 
+                            className="md:hidden p-2 text-gray-600 hover:text-primary-600 transition-colors"
+                            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                        >
+                            {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+                        </button>
+                        
+                        {/* Mobile menu */}
+                        {mobileMenuOpen && (
+                            <div className="absolute top-full left-0 right-0 bg-white/90 backdrop-blur-lg border-t border-gray-200 p-4 md:hidden">
+                                <div className="flex flex-col gap-4">
+                                    <a href="#features" className="text-gray-600 hover:text-primary-600 transition-colors">Features</a>
+                                    <a href="#about" className="text-gray-600 hover:text-primary-600 transition-colors">About</a>
+                                    <button className="btn btn-glass w-full">
+                                        Sign In
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </nav>
                 </div>
             </header>
