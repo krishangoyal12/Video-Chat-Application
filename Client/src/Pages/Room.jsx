@@ -344,7 +344,13 @@ export default function Room() {
   return (
     <div className="room-container">
       <div className="room-header">
-        <h2 className="room-title">Room Id: {roomId}</h2>
+        <div className="room-info">
+          <h2 className="room-title">Nexus Room</h2>
+          <div className="room-id">#{roomId}</div>
+          <div className="room-participants">
+            {remoteUsers.length + 1} participant{remoteUsers.length !== 0 ? 's' : ''}
+          </div>
+        </div>
         <div className={`status-indicator ${connectionStatus}`}>
           <div className={`status-dot ${connectionStatus}`} />
           {connectionStatus === "connected" ? "Connected" : "Connecting..."}
