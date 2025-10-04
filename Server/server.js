@@ -8,7 +8,7 @@ require('dotenv').config();
 const app = express();
 
 const allowedOrigins = [
-  'https://krishan-video-call-app.netlify.app',
+  'https://mannat-video-call-app.netlify.app',
   'http://localhost:5173'
 ];
 
